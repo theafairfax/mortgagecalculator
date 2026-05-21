@@ -682,7 +682,7 @@ with tab3:
             pass
         return ""
 
-    styled = tbl_df.style.applymap(color_profit, subset=["Total Profit / Deficit"])
+    styled = tbl_df.style.map(color_profit, subset=["Total Profit / Deficit"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # ── Cost basis breakdown ──
