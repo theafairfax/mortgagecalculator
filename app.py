@@ -390,4 +390,416 @@ with exp_col2:
 with exp_col3:
     with st.expander("🔍 What is Remaining Balance?"):
         st.markdown(f"""
-        The principal amount still owed to your
+        The principal amount still owed to your lending institution at the moment of your intended transaction in **Year {sale_year_offset}**.
+        
+        - **Original Loan Amount:** {fmt_dollar(loan_amount)}
+        - **Principal Paid Off:** {fmt_dollar(total_principal_paid)}
+        - **Remaining Payoff Balance:** {fmt_dollar(remaining_balance)}
+        
+        When selling, this amount is deducted from the gross sale price alongside your **{selling_cost_pct*100:.2f}%** transaction fees to compute your raw net proceeds.
+        """)
+
+st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
+
+# ──────────────────────────────────────────────
+#  TAB LAYOUT
+# ──────────────────────────────────────────────
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 Yearly Cost Breakdown",
+    "📉 Amortization Schedule",
+    "🎲 Monte Carlo Sale Analysis",
+    "📋 Full Amortization Table",
+])
+
+
+# ──────────────── TAB 1: Yearly Costs ────────────────
+with tab1:
+    # --- RENT VS BUY / HOUSING COST ANALYSIS METRIC ADDITION ---
+    st.markdown("#### ⚖️ Estimated True Cost of Housing vs. Renting")
+    
+    rc1, rc2, rc3 = st.columns([1.5, 2, 1.5])
+    
+    with rc1:
+        # Mini-metric display for the new requested feature
+        cost_status_color = "metric-positive" if estimated_monthly_housing_cost <= 0 else ""
+        st.markdown(f"""
+        <div class="metric-card" style="border-color: rgba(93,191,138,0.4); background: rgba(93,191,138,0.03);">
+          <div class="metric-label" style="color: #5dbf8a;">True Net Monthly Cost of Housing</div>
+          <div class="metric-value {cost_status_color}">{fmt_signed(estimated_monthly_housing_cost)}</div>
+          <div class="metric-sub">Factoring asset growth over {total_months} months</div>
+        </div>""", unsafe_allow_html=True)
+        
+    with rc2:
+        st.markdown("""
+        <div style="font-size: 0.88rem; line-height: 1.5; color: #c8cab4; padding-top: 0.2rem;">
+        <b>How is this calculated?</b><br>
+        We take everything you pay out-of-pocket (your Down Payment + all interest, taxes, insurance, and fees over time) and subtract your <b>Median Net Sale Proceeds</b>. 
+        Dividing that final balance across your ownership period reveals your accurate unrecoverable net cost per month.
+        </div>
+        """, unsafe_allow_html=True)
+        
+    with rc3:
+        # Interactive slider for Rent Comparison
+        baseline_rent = st.slider("Compare with equivalent Rent/mo ($)", 500, 6000, int(monthly_total * 0.8), step=50)
+
+    # Educational dropdown explaining calculation details
+    with st.expander("📘 Explanation: How to accurately compare this value to renting"):
+        st.markdown(f"""
+        When renting, **100% of your payment is non-recoverable**. When buying, your cash flows are split between unrecoverable expenses (interest, taxes) and asset equity.
+        
+        ### Analytical Framework:
+        1. **If this value is negative ({fmt_dollar(0)}):** Your home's market appreciation outpaced all carrying costs, transaction fees, and loan interest combined. You essentially lived in the home "for free" and generated a net profit on top.
+        2. **If this value is positive:** This represents your actual "rent equivalent" cost of occupancy. If you can rent a comparable home for *less* than **{fmt_dollar(estimated_monthly_housing_cost)}/month**, renting and investing the down payment difference into equities could yield higher mathematical efficiency.
+        3. **The Opportunity Cost Variable:** Remember that your Down Payment ({fmt_dollar(down_payment)}) is tied up in real estate equity rather than generating yields in liquid financial markets (e.g., compounding index funds). 
+        """)
+
+    # Interactive dynamic analysis table feature
+    total_rent_spent = baseline_rent * total_months
+    net_rent_vs_buy = total_rent_spent - net_housing_cost_total
+    
+    st.markdown("##### Realized Financial Comparison Matrix")
+    matrix_data = {
+        "Metric Category": [
+            "Total Out-of-Pocket Outflows Over Period", 
+            "Recoverable Equity / Cash Inflows at Sale", 
+            "Net Non-Recoverable Capital Loss", 
+            "Effective Monthly Realized Cost"
+        ],
+        f"Buying This Home ({sale_year_offset} Years)": [
+            fmt_dollar(cost_basis + total_principal_paid),
+            fmt_dollar(sale_values.mean() - selling_costs.mean()),
+            fmt_dollar(max(0, net_housing_cost_total)) if net_housing_cost_total > 0 else f"Net Profit: {fmt_dollar(abs(net_housing_cost_total))}",
+            fmt_dollar(max(0, estimated_monthly_housing_cost)) if estimated_monthly_housing_cost > 0 else f"Net Gain: {fmt_dollar(abs(estimated_monthly_housing_cost))}/mo"
+        ],
+        f"Renting Alternative (${baseline_rent:,.0f}/mo)": [
+            fmt_dollar(total_rent_spent),
+            "$0 (No Equity)",
+            fmt_dollar(total_rent_spent),
+            fmt_dollar(baseline_rent)
+        ]
+    }
+    st.dataframe(pd.DataFrame(matrix_data), use_container_width=True, hide_index=True)
+    
+    if net_rent_vs_buy > 0:
+        st.markdown(f"✨ **Verdict:** Over the course of the {sale_year_offset}-year period, buying this home is projected to save you **{fmt_dollar(net_rent_vs_buy)}** in non-recoverable wealth destruction compared to renting.")
+    else:
+        st.markdown(f"⚠️ **Verdict:** Over the course of the {sale_year_offset}-year period, renting at ${baseline_rent:,.0f}/mo is projected to preserve **{fmt_dollar(abs(net_rent_vs_buy))}** more of your net wealth than buying this property.")
+
+    st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
+
+    # --- RETAINED PLOTS ---
+    st.markdown("#### Annual Cost Breakdown by Category")
+    colors = {
+        "Principal":       "#5dbf8a",
+        "Interest":        "#e06060",
+        "Property Tax":    "#d4b870",
+        "Home Insurance":  "#7ab3d4",
+        "HOA":             "#a07ad4",
+        "PMI":             "#d4935a",
+    }
+
+    fig1 = go.Figure()
+    for cat, clr in colors.items():
+        if cat in yearly_df.columns:
+            fig1.add_trace(go.Bar(
+                name=cat,
+                x=yearly_df["Year"],
+                y=yearly_df[cat],
+                marker_color=clr,
+                hovertemplate=f"<b>{cat}</b><br>Year %{{x}}<br>%{{y:$,.0f}}<extra></extra>",
+            ))
+
+    fig1.add_vline(x=sale_year_offset, line_dash="dash", line_color="#d4b870",
+                   annotation_text=f"Sale: Yr {sale_year_offset}", annotation_font_color="#d4b870")
+    fig1.update_layout(
+        barmode="stack",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c8cab4"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(title="Year", gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(title="Annual Cost ($)", gridcolor="rgba(255,255,255,0.05)", tickformat="$,.0f"),
+        margin=dict(l=10, r=10, t=30, b=10),
+        height=420,
+    )
+    st.plotly_chart(fig1, use_container_width=True)
+
+    st.markdown("#### Cost Composition (Ownership Period)")
+    cost_items = {
+        "Principal (Equity Built)": total_principal_paid,
+        "Interest":                  total_interest_paid,
+        "Property Tax":              total_prop_tax,
+        "Home Insurance":            total_ins,
+        "HOA":                       total_hoa,
+        "PMI":                       total_pmi,
+    }
+    cost_items = {k: v for k, v in cost_items.items() if v > 0}
+
+    c1, c2 = st.columns([1.2, 1])
+    with c1:
+        fig_pie = go.Figure(go.Pie(
+            labels=list(cost_items.keys()),
+            values=list(cost_items.values()),
+            marker_colors=["#5dbf8a","#e06060","#d4b870","#7ab3d4","#a07ad4","#d4935a"],
+            hole=0.45,
+            textinfo="label+percent",
+            hovertemplate="<b>%{label}</b><br>%{value:$,.0f}<extra></extra>",
+        ))
+        fig_pie.update_layout(
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#c8cab4"), showlegend=False,
+            margin=dict(l=10, r=10, t=10, b=10), height=320,
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    with c2:
+        st.markdown("**Cost Totals (to sale)**")
+        for k, v in cost_items.items():
+            pct = v / sum(cost_items.values()) * 100
+            st.markdown(f"<div style='display:flex;justify-content:space-between;margin:0.3rem 0;"
+                        f"font-size:0.85rem;'><span style='color:#c8cab4'>{k}</span>"
+                        f"<span style='color:#d4b870'>{fmt_dollar(v)} <span style='color:#6a7b8b'>({pct:.1f}%)</span></span></div>",
+                        unsafe_allow_html=True)
+        st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
+        total_all = sum(cost_items.values())
+        st.markdown(f"<div style='display:flex;justify-content:space-between;font-size:0.9rem;'>"
+                    f"<b style='color:#d4b870'>Total Spent</b>"
+                    f"<b style='color:#d4b870'>{fmt_dollar(total_all)}</b></div>", unsafe_allow_html=True)
+        equity = total_principal_paid
+        non_eq = total_all - equity
+        st.markdown(f"<div style='display:flex;justify-content:space-between;font-size:0.82rem;margin-top:0.3rem;'>"
+                    f"<span style='color:#8a9bab'>of which non-recoverable</span>"
+                    f"<span style='color:#e06060'>{fmt_dollar(non_eq)}</span></div>", unsafe_allow_html=True)
+
+
+# ──────────────── TAB 2: Amortization ────────────────
+with tab2:
+    st.markdown("#### Loan Balance & Running Cost Over Time")
+
+    fig2 = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        subplot_titles=("Remaining Loan Balance", "Cumulative Interest vs Principal Paid"),
+    )
+
+    fig2.add_trace(go.Scatter(
+        x=amort_df["month"], y=amort_df["balance"],
+        mode="lines", name="Remaining Balance",
+        line=dict(color="#7ab3d4", width=2.5),
+        fill="tozeroy", fillcolor="rgba(122,179,212,0.1)",
+        hovertemplate="Month %{x}<br>Balance: %{y:$,.0f}<extra></extra>",
+    ), row=1, col=1)
+
+    fig2.add_trace(go.Scatter(
+        x=amort_df["month"], y=amort_df["interest"].cumsum(),
+        mode="lines", name="Cumulative Interest",
+        line=dict(color="#e06060", width=2),
+        fill="tozeroy", fillcolor="rgba(224,96,96,0.1)",
+        hovertemplate="Month %{x}<br>Cum. Interest: %{y:$,.0f}<extra></extra>",
+    ), row=2, col=1)
+    fig2.add_trace(go.Scatter(
+        x=amort_df["month"], y=amort_df["principal"].cumsum(),
+        mode="lines", name="Cumulative Principal",
+        line=dict(color="#5dbf8a", width=2),
+        fill="tozeroy", fillcolor="rgba(93,191,138,0.1)",
+        hovertemplate="Month %{x}<br>Cum. Principal: %{y:$,.0f}<extra></extra>",
+    ), row=2, col=1)
+
+    for r in [1, 2]:
+        fig2.add_vline(x=total_months, line_dash="dot", line_color="#d4b870",
+                       annotation_text="Sale", annotation_font_color="#d4b870", row=r, col=1)
+
+    fig2.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c8cab4"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    bgcolor="rgba(0,0,0,0)"),
+        margin=dict(l=10, r=10, t=40, b=10), height=520,
+    )
+    fig2.update_yaxes(gridcolor="rgba(255,255,255,0.05)", tickformat="$,.0f")
+    fig2.update_xaxes(gridcolor="rgba(255,255,255,0.05)", title_text="Month", row=2, col=1)
+    st.plotly_chart(fig2, use_container_width=True)
+
+
+# ──────────────── TAB 3: Monte Carlo ────────────────
+with tab3:
+    st.markdown("#### Monte Carlo Home Value Simulation")
+    st.markdown(f"""
+    <div class="info-box">
+    {n_sims:,} simulated price paths using a log-normal model with {mc_mean*100:.1f}% annual appreciation
+    and {mc_std*100:.1f}% volatility. The shaded band shows the 25th–75th percentile range.
+    At sale (Year {sale_year_offset}), after paying off remaining balance ({fmt_dollar(remaining_balance)})
+    and selling costs ({selling_cost_pct*100:.1f}%), profit is calculated vs your total cost basis.
+    </div>""", unsafe_allow_html=True)
+    st.markdown("")
+
+    years_x = np.arange(0, term_years + 1)
+
+    display_n = min(200, n_sims)
+    rng_idx = np.random.choice(n_sims, display_n, replace=False)
+
+    fig_mc = go.Figure()
+
+    for i in rng_idx:
+        fig_mc.add_trace(go.Scatter(
+            x=years_x, y=mc_paths[i],
+            mode="lines", line=dict(color="rgba(122,179,212,0.07)", width=1),
+            showlegend=False, hoverinfo="skip",
+        ))
+
+    p25_path = np.percentile(mc_paths, 25, axis=0)
+    p75_path = np.percentile(mc_paths, 75, axis=0)
+    p10_path = np.percentile(mc_paths, 10, axis=0)
+    p90_path = np.percentile(mc_paths, 90, axis=0)
+    p50_path = np.percentile(mc_paths, 50, axis=0)
+
+    fig_mc.add_trace(go.Scatter(
+        x=np.concatenate([years_x, years_x[::-1]]),
+        y=np.concatenate([p90_path, p10_path[::-1]]),
+        fill="toself", fillcolor="rgba(93,191,138,0.07)",
+        line=dict(color="rgba(0,0,0,0)"), name="10–90th %ile", hoverinfo="skip",
+    ))
+    fig_mc.add_trace(go.Scatter(
+        x=np.concatenate([years_x, years_x[::-1]]),
+        y=np.concatenate([p75_path, p25_path[::-1]]),
+        fill="toself", fillcolor="rgba(93,191,138,0.18)",
+        line=dict(color="rgba(0,0,0,0)"), name="25–75th %ile", hoverinfo="skip",
+    ))
+    fig_mc.add_trace(go.Scatter(
+        x=years_x, y=p50_path,
+        mode="lines", line=dict(color="#5dbf8a", width=3),
+        name="Median Path",
+        hovertemplate="Year %{x}<br>Median Value: %{y:$,.0f}<extra></extra>",
+    ))
+
+    fig_mc.add_vline(x=sale_year_offset, line_dash="dash", line_color="#d4b870",
+                     annotation_text=f"Planned Sale (Yr {sale_year_offset})",
+                     annotation_font_color="#d4b870")
+
+    fig_mc.add_hline(y=home_value, line_dash="dot", line_color="rgba(255,255,255,0.2)",
+                     annotation_text=f"Purchase: {fmt_dollar(home_value)}",
+                     annotation_font_color="rgba(255,255,255,0.4)")
+
+    fig_mc.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c8cab4"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(title="Years After Purchase", gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(title="Home Value ($)", gridcolor="rgba(255,255,255,0.05)", tickformat="$,.0f"),
+        margin=dict(l=10, r=10, t=10, b=10), height=420,
+    )
+    st.plotly_chart(fig_mc, use_container_width=True)
+
+    # ── Profit Distribution ──
+    st.markdown("#### Total Profit / Deficit Distribution at Sale")
+
+    fig_hist = go.Figure()
+    fig_hist.add_trace(go.Histogram(
+        x=total_profit,
+        nbinsx=60,
+        marker=dict(
+            color=np.where(total_profit >= 0, "#5dbf8a", "#e06060"),
+            line=dict(color="rgba(0,0,0,0.3)", width=0.5),
+        ),
+        name="Simulation Outcomes",
+        hovertemplate="Profit: %{x:$,.0f}<br>Count: %{y}<extra></extra>",
+    ))
+
+    for pv, label, clr in [
+        (p10, "P10", "#e06060"), (p25, "P25", "#d4935a"),
+        (p50, "P50", "#d4b870"), (p75, "P75", "#7ab3d4"), (p90, "P90", "#5dbf8a"),
+    ]:
+        fig_hist.add_vline(x=pv, line_dash="dot", line_color=clr,
+                           annotation_text=f"{label}: {fmt_signed(pv)}",
+                           annotation_font_color=clr, annotation_font_size=11)
+
+    fig_hist.add_vline(x=0, line_color="white", line_width=1.5)
+
+    fig_hist.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c8cab4"),
+        xaxis=dict(title="Total Profit / Deficit ($)", gridcolor="rgba(255,255,255,0.05)", tickformat="$,.0f"),
+        yaxis=dict(title="Number of Simulations", gridcolor="rgba(255,255,255,0.05)"),
+        showlegend=False,
+        margin=dict(l=10, r=10, t=10, b=10), height=340,
+    )
+    st.plotly_chart(fig_hist, use_container_width=True)
+
+    # ── Profit percentile table ──
+    st.markdown("#### Profit Scenario Summary")
+    pctiles = [5, 10, 25, 50, 75, 90, 95]
+    pctile_vals = np.percentile(total_profit, pctiles)
+    sale_vals_at_p = np.percentile(sale_values, pctiles)
+
+    tbl_data = []
+    for pct, prof, sv in zip(pctiles, pctile_vals, sale_vals_at_p):
+        tbl_data.append({
+            "Scenario (Percentile)": f"P{pct}",
+            "Sale Price": fmt_dollar(sv),
+            "Selling Costs": fmt_dollar(sv * selling_cost_pct),
+            "Remaining Balance": fmt_dollar(remaining_balance),
+            "Net Proceeds": fmt_dollar(sv - sv * selling_cost_pct - remaining_balance),
+            "Total Cost Basis": fmt_dollar(cost_basis),
+            "Total Profit / Deficit": fmt_signed(prof),
+        })
+
+    tbl_df = pd.DataFrame(tbl_data)
+
+    def color_profit(val):
+        try:
+            if val.startswith("+"):
+                return "color: #5dbf8a"
+            elif val.startswith("-"):
+                return "color: #e06060"
+        except:
+            pass
+        return ""
+
+    styled = tbl_df.style.map(color_profit, subset=["Total Profit / Deficit"])
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+# ──────────────── TAB 4: Full Table ────────────────
+with tab4:
+    st.markdown("#### Complete Monthly Amortization Schedule")
+
+    display_df = amort_df.copy()
+    start_mo_idx = MONTHS.index(start_month)
+    dates = []
+    yr, mo = start_year, start_mo_idx
+    for _ in range(len(display_df)):
+        dates.append(f"{MONTHS[mo]} {yr}")
+        mo += 1
+        if mo == 12:
+            mo = 0
+            yr += 1
+    display_df.insert(0, "Date", dates)
+    display_df["Cumulative Interest"] = display_df["interest"].cumsum()
+    display_df["Cumulative Principal"] = display_df["principal"].cumsum()
+
+    display_df = display_df.rename(columns={
+        "month": "Month", "payment": "Payment", "interest": "Interest",
+        "principal": "Principal", "balance": "Balance",
+    })
+
+    dollar_cols = ["Payment","Interest","Principal","Balance","Cumulative Interest","Cumulative Principal"]
+    fmt_dict = {c: "${:,.2f}" for c in dollar_cols}
+
+    st.dataframe(
+        display_df[["Month","Date","Payment","Interest","Principal",
+                     "Cumulative Interest","Cumulative Principal","Balance"]]
+        .style.format(fmt_dict),
+        use_container_width=True,
+        height=480,
+    )
+
+    csv = display_df.to_csv(index=False)
+    st.download_button(
+        label="⬇ Download CSV",
+        data=csv,
+        file_name="amortization_schedule.csv",
+        mime="text/csv",
+    )
