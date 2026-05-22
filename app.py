@@ -158,9 +158,9 @@ def compute_amortization(loan_amount, annual_rate, term_years, extra_monthly=0):
     return pd.DataFrame(rows)
 
 
-def build_yearly_cost_df(amort_df, prop_tax_yr, home_ins_yr, hoa_mo, pmi_pct, loan_amount,
-                          term_years, sale_month_abs):
-    """Aggregate monthly costs into yearly buckets."""
+def build_yearly_cost_df(amort_df, prop_tax_yr, tax_growth_pct, home_ins_yr, ins_growth_pct, hoa_mo, pmi_pct, loan_amount,
+                          term_years):
+    """Aggregate monthly costs into yearly buckets, growing taxes and insurance over time."""
     rows = []
     pmi_threshold = loan_amount * 0.80  # PMI drops when LTV < 80%
 
@@ -170,7 +170,12 @@ def build_yearly_cost_df(amort_df, prop_tax_yr, home_ins_yr, hoa_mo, pmi_pct, lo
         subset = amort_df[(amort_df["month"] >= start) & (amort_df["month"] <= end)]
         if subset.empty:
             break
-        # PMI: charged while balance > 80% of original loan (proxy for original home value)
+            
+        # Grow costs based on the year index (Year 1 uses initial cost base)
+        current_tax_yr = prop_tax_yr * ((1 + tax_growth_pct / 100) ** (year - 1))
+        current_ins_yr = home_ins_yr * ((1 + ins_growth_pct / 100) ** (year - 1))
+
+        # PMI: charged while balance > 80% of original loan
         pmi_months = sum(
             1 for _, row in subset.iterrows()
             if (row["balance"] + row["principal"]) > pmi_threshold
@@ -182,8 +187,8 @@ def build_yearly_cost_df(amort_df, prop_tax_yr, home_ins_yr, hoa_mo, pmi_pct, lo
             "Year": year,
             "Principal": subset["principal"].sum(),
             "Interest": subset["interest"].sum(),
-            "Property Tax": prop_tax_yr,
-            "Home Insurance": home_ins_yr,
+            "Property Tax": current_tax_yr,
+            "Home Insurance": current_ins_yr,
             "HOA": hoa_mo * 12,
             "PMI": pmi_annual,
         })
@@ -239,12 +244,17 @@ with st.sidebar:
     start_year = st.number_input("Start Year", min_value=2020, max_value=2060, value=2025, step=1)
 
     st.markdown("---")
-    st.markdown("### 💰 Monthly Costs")
+    st.markdown("### 💰 Initial Monthly Costs")
     prop_tax_yr = st.number_input("Property Tax ($/yr)", min_value=0, value=4_200, step=100, format="%d")
     pmi_pct = st.number_input("PMI (%)", min_value=0.0, max_value=5.0, value=0.5 if dp_pct < 20 else 0.0,
                                step=0.05, format="%.2f")
     home_ins_yr = st.number_input("Home Insurance ($/yr)", min_value=0, value=1_800, step=100, format="%d")
     hoa_mo = st.number_input("Monthly HOA ($)", min_value=0, value=0, step=10, format="%d")
+
+    st.markdown("---")
+    st.markdown("### 🔄 Cost Growth Assumptions")
+    tax_growth_pct = st.slider("Property Tax Annual Increase (%)", 0.0, 10.0, 2.0, 0.1)
+    ins_growth_pct = st.slider("Insurance Annual Increase (%)", 0.0, 10.0, 3.0, 0.1)
 
     st.markdown("---")
     st.markdown("### 📅 Sale Scenario")
@@ -265,26 +275,30 @@ with st.sidebar:
 #  COMPUTATIONS
 # ──────────────────────────────────────────────
 amort_df = compute_amortization(loan_amount, interest_rate, term_years)
-yearly_df = build_yearly_cost_df(amort_df, prop_tax_yr, home_ins_yr, hoa_mo, pmi_pct,
-                                  loan_amount, term_years, sale_month_abs)
+# Generate full yearly dataset reflecting variable growth rates
+yearly_df = build_yearly_cost_df(amort_df, prop_tax_yr, tax_growth_pct, home_ins_yr, ins_growth_pct, hoa_mo, pmi_pct,
+                                  loan_amount, term_years)
 
-# Cumulative costs up to sale month
-sale_subset = amort_df[amort_df["month"] <= sale_month_abs]
+# Calculate cumulative costs up to exact sale month factoring in cost inflation
+total_months = min(sale_month_abs, len(amort_df))
+sale_subset = amort_df[amort_df["month"] <= total_months]
 total_interest_paid = sale_subset["interest"].sum()
 total_principal_paid = sale_subset["principal"].sum()
 remaining_balance = sale_subset["balance"].iloc[-1] if not sale_subset.empty else loan_amount
 
-total_months = min(sale_month_abs, len(amort_df))
-full_years = total_months // 12
-extra_mos = total_months % 12
-
-total_prop_tax = prop_tax_yr * (total_months / 12)
-total_ins = home_ins_yr * (total_months / 12)
+total_prop_tax = 0
+total_ins = 0
 total_hoa = hoa_mo * total_months
+
+# Loop month-by-month up to sale to capture compounding inflation on carrying costs accurately
+for m in range(total_months):
+    current_yr_idx = m // 12
+    total_prop_tax += (prop_tax_yr * ((1 + tax_growth_pct / 100) ** current_yr_idx)) / 12
+    total_ins += (home_ins_yr * ((1 + ins_growth_pct / 100) ** current_yr_idx)) / 12
 
 # PMI cost up to sale
 pmi_threshold = loan_amount * 0.80
-pmi_rows = amort_df[amort_df["month"] <= sale_month_abs]
+pmi_rows = amort_df[amort_df["month"] <= total_months]
 pmi_months_paid = sum(
     1 for _, row in pmi_rows.iterrows()
     if (row["balance"] + row["principal"]) > pmi_threshold
@@ -303,7 +317,7 @@ sale_values = mc_paths[:, sale_col]
 selling_costs = sale_values * selling_cost_pct
 net_proceeds = sale_values - selling_costs - remaining_balance
 
-# Total cost basis: down payment + all non-equity costs
+# Total cost basis: down payment + all non-equity costs accumulated over time
 cost_basis = down_payment + total_non_equity
 total_profit = net_proceeds - cost_basis
 
@@ -318,13 +332,13 @@ st.markdown("""
 <div class="hero-header">
   <h1 style="margin:0;font-size:2rem;">🏡 Home Profit Analyzer</h1>
   <p style="margin:0.3rem 0 0;color:#8a9bab;font-size:0.9rem;">
-    Total-cost profitability analysis for future home buyers — amortization, carrying costs, and Monte Carlo sale projections.
+    Total-cost profitability analysis for future home buyers — amortization, dynamic carrying costs, and Monte Carlo sale projections.
   </p>
 </div>
 """, unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────
-#  SUMMARY METRICS
+#  SUMMARY METRICS & EXPANSDIBLE BREAKDOWNS
 # ──────────────────────────────────────────────
 col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -333,20 +347,54 @@ monthly_total = monthly_payment_base + prop_tax_yr/12 + home_ins_yr/12 + hoa_mo 
 
 profit_color = "metric-positive" if p50 >= 0 else "metric-negative"
 
-for col, label, value, sub in zip(
-    [col1, col2, col3, col4, col5],
-    ["Monthly Payment", "Total Cost to Sell", "Remaining Balance", "Median Profit (50th %)", "Prob. of Profit"],
-    [fmt_dollar(monthly_total), fmt_dollar(cost_basis + remaining_balance), fmt_dollar(remaining_balance),
-     fmt_signed(p50), f"{prob_profit:.0f}%"],
-    [f"P&I + all costs", f"after {sale_year_offset}yr {sale_month_sel}", f"at sale", "at median sale price", "chance you profit"],
-):
-    color_cls = profit_color if label in ["Median Profit (50th %)", "Prob. of Profit"] else ""
+# Card values configuration
+cards_config = [
+    {"label": "Initial Monthly Payment", "value": fmt_dollar(monthly_total), "sub": "P&I + initial costs"},
+    {"label": "Total Cost Basis", "value": fmt_dollar(cost_basis), "sub": f"Paid over {sale_year_offset}yr {sale_month_sel}"},
+    {"label": "Remaining Balance", "value": fmt_dollar(remaining_balance), "sub": "Loan balance at sale"},
+    {"label": "Median Profit (50th %)", "value": fmt_signed(p50), "sub": "At median sale price"},
+    {"label": "Prob. of Profit", "value": f"{prob_profit:.0f}%", "sub": "Chance you net profit"}
+]
+
+for col, config in zip([col1, col2, col3, col4, col5], cards_config):
+    color_cls = profit_color if config["label"] in ["Median Profit (50th %)", "Prob. of Profit"] else ""
     col.markdown(f"""
     <div class="metric-card">
-      <div class="metric-label">{label}</div>
-      <div class="metric-value {color_cls}">{value}</div>
-      <div class="metric-sub">{sub}</div>
+      <div class="metric-label">{config["label"]}</div>
+      <div class="metric-value {color_cls}">{config["value"]}</div>
+      <div class="metric-sub">{config["sub"]}</div>
     </div>""", unsafe_allow_html=True)
+
+# Interactive feedback feature: Detail explanations explicitly positioned below cards
+st.markdown("")
+exp_col1, exp_col2, exp_col3 = st.columns([1, 2, 2])
+with exp_col2:
+    with st.expander("🔍 What is Total Cost Basis?"):
+        st.markdown(f"""
+        This represents the total out-of-pocket structural cost required to secure, own, and dispose of the home up to month **{total_months}**:
+        
+        ```
+        Cost Basis = Down Payment + Interest Paid + Taxes + Insurance + HOA + PMI
+        ```
+        - **Down Payment:** {fmt_dollar(down_payment)}
+        - **Interest Paid:** {fmt_dollar(total_interest_paid)}
+        - **Property Tax (Inflated):** {fmt_dollar(total_prop_tax)} (at {tax_growth_pct}% annual growth)
+        - **Insurance (Inflated):** {fmt_dollar(total_ins)} (at {ins_growth_pct}% annual growth)
+        - **HOA & PMI:** {fmt_dollar(total_hoa + total_pmi)}
+        
+        *Principal payments are omitted from the baseline cost basis because they are already accounted for when deducting the remaining loan balance from structural proceeds.*
+        """)
+with exp_col3:
+    with st.expander("🔍 What is Remaining Balance?"):
+        st.markdown(f"""
+        The principal amount still owed to your lending institution at the moment of your intended transaction in **Year {sale_year_offset}**.
+        
+        - **Original Loan Amount:** {fmt_dollar(loan_amount)}
+        - **Principal Paid Off:** {fmt_dollar(total_principal_paid)}
+        - **Remaining Payoff Balance:** {fmt_dollar(remaining_balance)}
+        
+        When selling, this amount is deducted from the gross sale price alongside your **{selling_cost_pct*100:.2f}%** transaction fees ({fmt_dollar(selling_costs.mean())} on average) to compute your raw net proceeds.
+        """)
 
 st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
 
@@ -368,7 +416,7 @@ with tab1:
     <div class="info-box">
     Stacked bars show each year's total carrying costs split into Principal (equity built),
     Interest, Taxes, Insurance, HOA, and PMI. The dashed line marks your planned sale at
-    <b>Year {sale_year_offset}</b>.
+    <b>Year {sale_year_offset}</b>. Notice taxes and insurance compounding over time based on growth assumptions.
     </div>""", unsafe_allow_html=True)
     st.markdown("")
 
@@ -495,7 +543,7 @@ with tab2:
 
     # Sale marker
     for r in [1, 2]:
-        fig2.add_vline(x=sale_month_abs, line_dash="dot", line_color="#d4b870",
+        fig2.add_vline(x=total_months, line_dash="dot", line_color="#d4b870",
                        annotation_text="Sale", annotation_font_color="#d4b870", row=r, col=1)
 
     fig2.update_layout(
@@ -508,33 +556,6 @@ with tab2:
     fig2.update_yaxes(gridcolor="rgba(255,255,255,0.05)", tickformat="$,.0f")
     fig2.update_xaxes(gridcolor="rgba(255,255,255,0.05)", title_text="Month", row=2, col=1)
     st.plotly_chart(fig2, use_container_width=True)
-
-    # Monthly P&I split waterfall area chart
-    st.markdown("#### Monthly Interest vs Principal Split")
-    fig3 = go.Figure()
-    fig3.add_trace(go.Scatter(
-        x=amort_df["month"], y=amort_df["interest"],
-        stackgroup="one", name="Interest",
-        line_color="#e06060", fillcolor="rgba(224,96,96,0.6)",
-        hovertemplate="Month %{x}<br>Interest: %{y:$,.0f}<extra></extra>",
-    ))
-    fig3.add_trace(go.Scatter(
-        x=amort_df["month"], y=amort_df["principal"],
-        stackgroup="one", name="Principal",
-        line_color="#5dbf8a", fillcolor="rgba(93,191,138,0.6)",
-        hovertemplate="Month %{x}<br>Principal: %{y:$,.0f}<extra></extra>",
-    ))
-    fig3.add_vline(x=sale_month_abs, line_dash="dot", line_color="#d4b870")
-    fig3.update_layout(
-        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#c8cab4"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
-                    bgcolor="rgba(0,0,0,0)"),
-        xaxis=dict(title="Month", gridcolor="rgba(255,255,255,0.05)"),
-        yaxis=dict(title="Monthly Amount ($)", gridcolor="rgba(255,255,255,0.05)", tickformat="$,.0f"),
-        margin=dict(l=10, r=10, t=10, b=10), height=300,
-    )
-    st.plotly_chart(fig3, use_container_width=True)
 
 
 # ──────────────── TAB 3: Monte Carlo ────────────────
@@ -616,9 +637,6 @@ with tab3:
     st.markdown("#### Total Profit / Deficit Distribution at Sale")
 
     fig_hist = go.Figure()
-    profit_colors = np.where(
-        np.linspace(total_profit.min(), total_profit.max(), 60) >= 0, "#5dbf8a", "#e06060"
-    )
     fig_hist.add_trace(go.Histogram(
         x=total_profit,
         nbinsx=60,
@@ -673,7 +691,6 @@ with tab3:
 
     def color_profit(val):
         try:
-            v = float(val.replace("$","").replace(",","").replace("+","").replace("M","e6"))
             if val.startswith("+"):
                 return "color: #5dbf8a"
             elif val.startswith("-"):
@@ -684,47 +701,6 @@ with tab3:
 
     styled = tbl_df.style.map(color_profit, subset=["Total Profit / Deficit"])
     st.dataframe(styled, use_container_width=True, hide_index=True)
-
-    # ── Cost basis breakdown ──
-    st.markdown("#### How the Cost Basis Is Calculated")
-    c1, c2 = st.columns(2)
-    with c1:
-        items = {
-            "Down Payment": down_payment,
-            "Interest Paid (to sale)": total_interest_paid,
-            "Property Tax (to sale)": total_prop_tax,
-            "Home Insurance (to sale)": total_ins,
-            "HOA (to sale)": total_hoa,
-            "PMI (to sale)": total_pmi,
-        }
-        for k, v in items.items():
-            if v > 0:
-                st.markdown(
-                    f"<div style='display:flex;justify-content:space-between;margin:0.35rem 0;"
-                    f"font-size:0.85rem;'><span style='color:#c8cab4'>{k}</span>"
-                    f"<span style='color:#d4b870'>{fmt_dollar(v)}</span></div>",
-                    unsafe_allow_html=True,
-                )
-        st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
-        st.markdown(
-            f"<div style='display:flex;justify-content:space-between;font-size:0.92rem;'>"
-            f"<b style='color:#d4b870'>Total Cost Basis</b>"
-            f"<b style='color:#d4b870'>{fmt_dollar(cost_basis)}</b></div>",
-            unsafe_allow_html=True,
-        )
-    with c2:
-        st.markdown("""
-        <div style='background:rgba(93,191,138,0.07);border:1px solid rgba(93,191,138,0.25);
-                    border-radius:10px;padding:1rem;font-size:0.85rem;color:#9ed4b4;line-height:1.7;'>
-        <b style='color:#5dbf8a;'>How profit is calculated:</b><br>
-        <b>Profit</b> = Net Proceeds − Cost Basis<br><br>
-        <b>Net Proceeds</b> = Sale Price − Selling Costs − Remaining Loan Balance<br><br>
-        <b>Cost Basis</b> = Down Payment + all non-recoverable costs paid during ownership
-        (interest, taxes, insurance, HOA, PMI)<br><br>
-        Principal payments are <em>not</em> in the cost basis because they reduce the remaining
-        balance deducted from proceeds — they are accounted for exactly once.
-        </div>
-        """, unsafe_allow_html=True)
 
 
 # ──────────────── TAB 4: Full Table ────────────────
